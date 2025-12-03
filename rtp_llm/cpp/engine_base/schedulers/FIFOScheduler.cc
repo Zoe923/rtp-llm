@@ -97,20 +97,32 @@ void FIFOScheduler::evictDoneStreams(list<GenerateStreamPtr>& streams) {
 }
 
 absl::Status FIFOScheduler::enqueue(const GenerateStreamPtr& stream) {
+    RTP_LLM_LOG_INFO("[SCHED_DEBUG] enqueue START, stream_id=%ld", stream->streamId());
     {
         std::lock_guard<std::mutex> lock(lock_);
+        RTP_LLM_LOG_INFO("[SCHED_DEBUG] enqueue got lock, waiting_size=%zu, running_size=%zu",
+                         waiting_streams_.size(),
+                         running_streams_.size());
         waiting_streams_.emplace_back(stream);
+        RTP_LLM_LOG_INFO("[SCHED_DEBUG] stream added to queue, new waiting_size=%zu", waiting_streams_.size());
     }
+    RTP_LLM_LOG_INFO("[SCHED_DEBUG] calling cond_.notify_all()");
     cond_.notify_all();
+    RTP_LLM_LOG_INFO("[SCHED_DEBUG] enqueue END");
     return absl::OkStatus();
 }
 
 absl::Status FIFOScheduler::batchEnqueue(const vector<GenerateStreamPtr>& streams) {
+    RTP_LLM_LOG_INFO("[SCHED_DEBUG] batchEnqueue START, batch_size=%zu", streams.size());
     {
         std::lock_guard<std::mutex> lock(lock_);
+        RTP_LLM_LOG_INFO("[SCHED_DEBUG] batchEnqueue got lock, waiting_size=%zu", waiting_streams_.size());
         waiting_streams_.insert(waiting_streams_.end(), streams.begin(), streams.end());
+        RTP_LLM_LOG_INFO("[SCHED_DEBUG] batch added to queue, new waiting_size=%zu", waiting_streams_.size());
     }
+    RTP_LLM_LOG_INFO("[SCHED_DEBUG] calling cond_.notify_all()");
     cond_.notify_all();
+    RTP_LLM_LOG_INFO("[SCHED_DEBUG] batchEnqueue END");
     return absl::OkStatus();
 }
 
@@ -322,16 +334,69 @@ void FIFOScheduler::accountBatchMetrics(const list<GenerateStreamPtr>& new_strea
 }
 
 bool FIFOScheduler::waitPredicate() {
-    return stop_ || !waiting_streams_.empty() || !running_streams_.empty() || !remote_running_streams_.empty();
+    bool result = stop_ || !waiting_streams_.empty() || !running_streams_.empty() || !remote_running_streams_.empty();
+    // Only log when result changes or periodically to reduce log spam
+    static bool last_result = false;
+    if (result != last_result
+        || (!result && waiting_streams_.empty() && running_streams_.empty() && remote_running_streams_.empty())) {
+        RTP_LLM_LOG_INFO(
+            "[SCHED_DEBUG] waitPredicate() = %d, stop=%d, waiting_empty=%d, running_empty=%d, remote_running_empty=%d",
+            (int)result,
+            (int)stop_,
+            (int)waiting_streams_.empty(),
+            (int)running_streams_.empty(),
+            (int)remote_running_streams_.empty());
+        last_result = result;
+    }
+    return result;
 }
 
 absl::StatusOr<list<GenerateStreamPtr>> FIFOScheduler::schedule(size_t reserve_step) {
+    RTP_LLM_LOG_INFO("[SCHED_DEBUG] schedule() START");
     unique_lock<mutex> lock(lock_);
-    if (need_fill_fake_stream_) {
-        cond_.wait_for(lock, std::chrono::milliseconds(10), [this] { return waitPredicate(); });
+    RTP_LLM_LOG_INFO("[SCHED_DEBUG] schedule() got lock, waiting=%zu, running=%zu, remote_running=%zu, stop=%d",
+                     waiting_streams_.size(),
+                     running_streams_.size(),
+                     remote_running_streams_.size(),
+                     (int)stop_);
+
+    // Check if we need to wait
+    if (!waitPredicate()) {
+        RTP_LLM_LOG_INFO("[SCHED_DEBUG] waitPredicate is false, need to wait");
+        RTP_LLM_LOG_INFO("[SCHED_DEBUG] waiting_empty=%d, running_empty=%d, remote_running_empty=%d, stop=%d",
+                         (int)waiting_streams_.empty(),
+                         (int)running_streams_.empty(),
+                         (int)remote_running_streams_.empty(),
+                         (int)stop_);
     } else {
-        cond_.wait(lock, [this] { return waitPredicate(); });
+        RTP_LLM_LOG_INFO("[SCHED_DEBUG] waitPredicate is true, no need to wait");
     }
+
+    if (need_fill_fake_stream_) {
+        RTP_LLM_LOG_INFO("[SCHED_DEBUG] using cond_.wait_for (need_fill_fake_stream=true)");
+        cond_.wait_for(lock, std::chrono::milliseconds(10), [this] {
+            bool pred = waitPredicate();
+            if (pred) {
+                RTP_LLM_LOG_INFO("[SCHED_DEBUG] wait_for woke up: predicate=true");
+            }
+            return pred;
+        });
+    } else {
+        RTP_LLM_LOG_INFO("[SCHED_DEBUG] calling cond_.wait");
+        cond_.wait(lock, [this] {
+            bool pred = waitPredicate();
+            RTP_LLM_LOG_INFO("[SCHED_DEBUG] wait woke up: predicate=%d, waiting=%zu, running=%zu",
+                             (int)pred,
+                             waiting_streams_.size(),
+                             running_streams_.size());
+            return pred;
+        });
+    }
+
+    RTP_LLM_LOG_INFO("[SCHED_DEBUG] out of wait, after lock state: waiting=%zu, running=%zu, remote_running=%zu",
+                     waiting_streams_.size(),
+                     running_streams_.size(),
+                     remote_running_streams_.size());
 
     // PD_SEP_DEBUG: Log scheduler state (only when remote_running is not empty to reduce log volume)
     if (!remote_running_streams_.empty()) {
@@ -351,10 +416,12 @@ absl::StatusOr<list<GenerateStreamPtr>> FIFOScheduler::schedule(size_t reserve_s
     // TODO(xinfei.sxf) Those who just kicked out of running may join running again immediately.
     auto [fallback_streams, error_streams] = evaluateRunningNext(reserve_step);
     auto new_streams                       = scheduleNew(reserve_step);
+    RTP_LLM_LOG_INFO("[SCHED_DEBUG] scheduleNew returned %zu streams", new_streams.size());
     accountBatchMetrics(new_streams, running_streams_);
     running_streams_.insert(running_streams_.end(), new_streams.begin(), new_streams.end());
     reportMetrics(fallback_streams);
     last_schedule_time_ = autil::TimeUtility::currentTimeInMilliSeconds();
+    RTP_LLM_LOG_INFO("[SCHED_DEBUG] schedule() END, returning %zu running_streams", running_streams_.size());
     return running_streams_;
 }
 

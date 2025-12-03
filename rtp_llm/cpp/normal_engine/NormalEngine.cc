@@ -219,15 +219,31 @@ absl::Status NormalEngine::stop() {
 }
 
 void NormalEngine::loop() {
-    RTP_LLM_LOG_INFO("loop begin");
+    RTP_LLM_LOG_INFO("[ENGINE_DEBUG] loop begin, running_=%d", (int)running_);
+    RTP_LLM_LOG_INFO("[ENGINE_DEBUG] calling device->preRun()");
     device_->preRun();
+    RTP_LLM_LOG_INFO("[ENGINE_DEBUG] device->preRun() done, entering main loop, running_=%d", (int)running_);
+
+    int iteration_count = 0;
     while (running_) {
+        iteration_count++;
+        // Log every 1000 iterations to avoid spam, but always log first 10
+        if (iteration_count <= 10 || iteration_count % 1000 == 0) {
+            RTP_LLM_LOG_INFO("[ENGINE_DEBUG] loop iteration #%d START, running_=%d", iteration_count, (int)running_);
+        }
+
         auto status = step();
         if (!status.ok()) {
             RTP_LLM_LOG_ERROR("step running error: %s", status.ToString().c_str());
             THROW_IF_STATUS_ERROR(trySaveStepError());
         }
+
+        if (iteration_count <= 10 || iteration_count % 1000 == 0) {
+            RTP_LLM_LOG_INFO("[ENGINE_DEBUG] loop iteration #%d END, running_=%d", iteration_count, (int)running_);
+        }
     }
+
+    RTP_LLM_LOG_INFO("[ENGINE_DEBUG] loop exited, running_=%d, total_iterations=%d", (int)running_, iteration_count);
 }
 
 absl::Status NormalEngine::trySaveStepError() const {
@@ -241,7 +257,9 @@ std::shared_ptr<GenerateStream> NormalEngine::makeStream(const std::shared_ptr<G
 }
 
 void NormalEngine::enqueue(std::shared_ptr<GenerateStream>& stream) {
+    RTP_LLM_LOG_INFO("[ENGINE_DEBUG] NormalEngine::enqueue START, stream_id=%ld", stream->streamId());
     (void)scheduler_->enqueue(stream);
+    RTP_LLM_LOG_INFO("[ENGINE_DEBUG] NormalEngine::enqueue END, scheduler->enqueue returned");
 }
 
 std::shared_ptr<GenerateStream> NormalEngine::enqueue(const std::shared_ptr<GenerateInput>& input) {
@@ -264,24 +282,55 @@ NormalEngine::batchEnqueue(const std::vector<std::shared_ptr<GenerateInput>>& in
 }
 
 absl::Status NormalEngine::step() {
+    static int step_count = 0;
+    step_count++;
+    bool should_log = (step_count <= 10 || step_count % 100 == 0);  // Log first 10 steps and every 100th step
+
+    if (should_log) {
+        RTP_LLM_LOG_INFO("[ENGINE_DEBUG] step() #%d START", step_count);
+    }
+
     while (pause_) {
+        RTP_LLM_LOG_INFO("[ENGINE_DEBUG] engine paused, sleeping");
         // wait 50ms if system paused.
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     list<GenerateStreamPtr> streams;
     if (device_->getDeviceProperties().tp_rank == 0 && !params_.ffn_disaggregate_config.is_ffn_service()) {
+        if (should_log) {
+            RTP_LLM_LOG_INFO("[ENGINE_DEBUG] calling scheduler->schedule()");
+        }
         CHECK_AND_ASSIGN(streams, scheduler_->schedule());
+        if (should_log) {
+            RTP_LLM_LOG_INFO("[ENGINE_DEBUG] scheduler->schedule() returned, streams_size=%zu", streams.size());
+        }
         if (streams.empty()) {
+            if (should_log) {
+                RTP_LLM_LOG_INFO("[ENGINE_DEBUG] streams empty, dp_size=%zu", params_.dp_size_);
+            }
             if (params_.dp_size_ > 1) {
+                if (should_log) {
+                    RTP_LLM_LOG_INFO("[ENGINE_DEBUG] dp_size > 1, calling schedule() again");
+                }
                 CHECK_AND_ASSIGN(streams, scheduler_->schedule());
                 if (streams.empty()) {
+                    if (should_log) {
+                        RTP_LLM_LOG_INFO("[ENGINE_DEBUG] streams still empty, creating fake stream");
+                    }
                     streams.emplace_back(createMinFakeStream(1));
                 }
             } else {
+                if (should_log) {
+                    RTP_LLM_LOG_INFO("[ENGINE_DEBUG] dp_size <= 1, returning OkStatus");
+                }
                 return absl::OkStatus();
             }
         }
+    }
+
+    if (should_log) {
+        RTP_LLM_LOG_INFO("[ENGINE_DEBUG] step() about to process %zu streams", streams.size());
     }
     RTP_LLM_LOG_DEBUG(__PRETTY_FUNCTION__);
     bool gen_timeline = !streams.empty() && std::any_of(streams.begin(), streams.end(), [](const auto& stream) {
@@ -320,8 +369,15 @@ absl::Status NormalEngine::step() {
                                                    params_.profiling_debug_logging_config.torch_cuda_profiler_dir);
         profiler_->start();
     }
-    int64_t      step_begin_time_us = autil::TimeUtility::currentTimeInMicroSeconds();
-    absl::Status status             = executor_->process(streams);
+    int64_t step_begin_time_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    if (should_log) {
+        RTP_LLM_LOG_INFO("[ENGINE_DEBUG] calling executor->process()");
+    }
+    absl::Status status = executor_->process(streams);
+    if (should_log) {
+        RTP_LLM_LOG_INFO("[ENGINE_DEBUG] executor->process() done, status=%s",
+                         status.ok() ? "OK" : status.ToString().c_str());
+    }
 
     if (nullptr != profiler_) {
         profiler_step_--;
@@ -337,6 +393,9 @@ absl::Status NormalEngine::step() {
         reportMetrics({false, false, step_latency});
     }
 
+    if (should_log) {
+        RTP_LLM_LOG_INFO("[ENGINE_DEBUG] step() #%d END", step_count);
+    }
     return status;
 }
 

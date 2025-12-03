@@ -212,7 +212,13 @@ void DecodeRpcServer::localGenerate(DecodeGenerateContext& decode_context) {
     generate_stream->resetBeginTime(currentTimeUs());
     RTP_LLM_LOG_DEBUG(
         "decode init stream[%d]: %s", generate_stream->streamId(), generate_stream->debugString().c_str());
+    // RPC_DEBUG: Log before engine enqueue
+    RTP_LLM_LOG_INFO("[RPC_DEBUG] about to call engine_->enqueue, stream_id=%ld, thread=%ld",
+                     generate_stream->streamId(),
+                     (long)pthread_self());
     engine_->enqueue(generate_stream);
+    // RPC_DEBUG: Log after engine enqueue
+    RTP_LLM_LOG_INFO("[RPC_DEBUG] engine_->enqueue returned, stream_id=%ld", generate_stream->streamId());
     // PD_SEP_DEBUG: Log enqueue done
     RTP_LLM_LOG_INFO("request [%s] PD_SEP localGenerate enqueue done, stream_id=%ld",
                      decode_context.request_key.c_str(),
