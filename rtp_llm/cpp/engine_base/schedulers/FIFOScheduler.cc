@@ -60,7 +60,10 @@ void FIFOScheduler::evaluateRunningRemote() {
     for (auto it = running_streams_.begin(); it != running_streams_.end();) {
         if ((*it)->needRemoteGenerate() && (*it)->setRemoteGenerate()) {
             remote_running_streams_.emplace_back(*it);
-            RTP_LLM_LOG_DEBUG("stream [%ld] move to remote running streams", (*it)->streamId());
+            // PD_SEP_DEBUG: Log stream move to remote
+            RTP_LLM_LOG_INFO("stream [%ld] PD_SEP move to remote_running_streams, remote_running_size=%zu",
+                             (*it)->streamId(),
+                             remote_running_streams_.size());
             it = running_streams_.erase(it);
         } else {
             ++it;
@@ -73,16 +76,23 @@ int64_t FIFOScheduler::lastScheduleTime() {
 }
 
 void FIFOScheduler::evictDoneStreams(list<GenerateStreamPtr>& streams) {
+    size_t evicted_count = 0;
     for (auto it = streams.begin(); it != streams.end();) {
         (*it)->checkTimeout();
         if ((*it)->stopped() || (*it)->finished()) {
             // Immediately free resources to run more streams
             (*it)->releaseResource();
-            RTP_LLM_LOG_DEBUG("evict stream [%ld]", (*it)->streamId());
+            // PD_SEP_DEBUG: Log evicted stream details
+            RTP_LLM_LOG_INFO(
+                "evict stream [%ld], stopped=%d, finished=%d", (*it)->streamId(), (*it)->stopped(), (*it)->finished());
             it = streams.erase(it);
+            evicted_count++;
         } else {
             ++it;
         }
+    }
+    if (evicted_count > 0) {
+        RTP_LLM_LOG_INFO("evictDoneStreams: evicted %zu streams, remaining %zu", evicted_count, streams.size());
     }
 }
 
@@ -322,6 +332,17 @@ absl::StatusOr<list<GenerateStreamPtr>> FIFOScheduler::schedule(size_t reserve_s
     } else {
         cond_.wait(lock, [this] { return waitPredicate(); });
     }
+
+    // PD_SEP_DEBUG: Log scheduler state (only when remote_running is not empty to reduce log volume)
+    if (!remote_running_streams_.empty()) {
+        RTP_LLM_LOG_INFO("FIFOScheduler::schedule PD_SEP state: waiting=%zu, running=%zu, remote_running=%zu, "
+                         "max_batch=%zu",
+                         waiting_streams_.size(),
+                         running_streams_.size(),
+                         remote_running_streams_.size(),
+                         max_generate_batch_size_);
+    }
+
     evaluateRunningRemote();
     evictDoneStreams(waiting_streams_);
     evictDoneStreams(running_streams_);

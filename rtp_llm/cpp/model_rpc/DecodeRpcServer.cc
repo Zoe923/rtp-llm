@@ -92,11 +92,22 @@ void DecodeRpcServer::allocateResource(DecodeGenerateContext& decode_context) {
     auto reserve_block_num =
         maga_init_params_.gpt_init_parameter.scheduler_reserve_resource_ratio_ * cache_manager->totalBlocks() / 100;
     auto current_blocks = cache_manager->availableBlockNums();
+    auto total_blocks   = cache_manager->totalBlocks();
+
+    // PD_SEP_DEBUG: Log resource allocation details
+    RTP_LLM_LOG_INFO("request [%s] PD_SEP allocateResource: current_blocks=%d, reserve_block_num=%d, "
+                     "total_blocks=%d, stream_id=%ld",
+                     decode_context.request_key.c_str(),
+                     current_blocks,
+                     reserve_block_num,
+                     total_blocks,
+                     generate_stream->streamId());
+
     if (current_blocks < reserve_block_num) {
         string error_msg = "request: [" + decode_context.request_key + "] malloc kv cache block failed at decode node, "
                            + "current_blocks = " + std::to_string(current_blocks)
                            + ", reserve_block_num = " + std::to_string(reserve_block_num);
-        RTP_LLM_LOG_ERROR(error_msg);
+        RTP_LLM_LOG_ERROR("PD_SEP RESOURCE_EXHAUSTED: %s", error_msg.c_str());
         decode_context.error_status = grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, error_msg);
         return;
     }
@@ -140,11 +151,18 @@ void DecodeRpcServer::loadCacheFromPrefill(DecodeGenerateContext& decode_context
     GRPC_RET_IF_ERROR(
         decode_context, grpc_stream->Write(load_response), grpc::StatusCode::INTERNAL, "send load response failed");
     GRPC_RET_IF_ERROR(decode_context, error_info.ok(), grpc::StatusCode::INTERNAL, error_info.ToString().c_str());
-    RTP_LLM_LOG_DEBUG("request [%s] load cache from prefill done", decode_context.request_key.c_str());
+    // PD_SEP_DEBUG: Log load cache done
+    RTP_LLM_LOG_INFO("request [%s] PD_SEP loadCacheFromPrefill done, stream_id=%ld, cost_time_ms=%ld",
+                     decode_context.request_key.c_str(),
+                     decode_context.getStream()->streamId(),
+                     decode_context.time_info.loadCacheTimeMs());
 }
 
 void DecodeRpcServer::localGenerate(DecodeGenerateContext& decode_context) {
-    RTP_LLM_LOG_DEBUG("request [%s] start to local generate", decode_context.request_key.c_str());
+    // PD_SEP_DEBUG: Log local generate start
+    RTP_LLM_LOG_INFO("request [%s] PD_SEP localGenerate start, stream_id=%ld",
+                     decode_context.request_key.c_str(),
+                     decode_context.getStream()->streamId());
     auto&             grpc_stream     = decode_context.rpc_context.grpc_stream;
     auto&             generate_stream = decode_context.getStream();
     GenerateRequestPB generate_request;
@@ -195,7 +213,10 @@ void DecodeRpcServer::localGenerate(DecodeGenerateContext& decode_context) {
     RTP_LLM_LOG_DEBUG(
         "decode init stream[%d]: %s", generate_stream->streamId(), generate_stream->debugString().c_str());
     engine_->enqueue(generate_stream);
-    RTP_LLM_LOG_DEBUG("request [%s] enqueue success", decode_context.request_key.c_str());
+    // PD_SEP_DEBUG: Log enqueue done
+    RTP_LLM_LOG_INFO("request [%s] PD_SEP localGenerate enqueue done, stream_id=%ld",
+                     decode_context.request_key.c_str(),
+                     generate_stream->streamId());
     decode_context.error_status =
         pollStreamOutput(decode_context.server_context,
                          decode_context.request_key,
@@ -715,11 +736,26 @@ grpc::Status DecodeRpcServer::RemoteGenerate(grpc::ServerContext* server_context
         EXECUTE_STAGE_FUNC(localGenerate, decode_context);
         decode_context.stat_info.nextStage();
     } catch (const std::exception& e) {
-        auto error_msg              = "request [" + decode_context.request_key + "] catch exception [" + e.what() + "]";
+        auto error_msg = "request [" + decode_context.request_key + "] catch exception [" + e.what() + "]";
+        // PD_SEP_FIX: Ensure stream is stopped when exception occurs
+        if (decode_context.getStream()) {
+            RTP_LLM_LOG_WARNING("request [%s] PD_SEP catch exception, stopping stream [%ld]: %s",
+                                decode_context.request_key.c_str(),
+                                decode_context.getStream()->streamId(),
+                                e.what());
+            decode_context.getStream()->setStop(ErrorCode::EXCEPTION, error_msg);
+        }
         decode_context.error_status = grpc::Status(grpc::StatusCode::INTERNAL, error_msg);
         return decode_context.error_status;
     } catch (...) {
-        auto error_msg              = "request [" + decode_context.request_key + "] catch unknown exception";
+        auto error_msg = "request [" + decode_context.request_key + "] catch unknown exception";
+        // PD_SEP_FIX: Ensure stream is stopped when exception occurs
+        if (decode_context.getStream()) {
+            RTP_LLM_LOG_WARNING("request [%s] PD_SEP catch unknown exception, stopping stream [%ld]",
+                                decode_context.request_key.c_str(),
+                                decode_context.getStream()->streamId());
+            decode_context.getStream()->setStop(ErrorCode::EXCEPTION, error_msg);
+        }
         decode_context.error_status = grpc::Status(grpc::StatusCode::INTERNAL, error_msg);
         return decode_context.error_status;
     }

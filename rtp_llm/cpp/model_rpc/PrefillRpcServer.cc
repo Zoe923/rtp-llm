@@ -222,7 +222,9 @@ void PrefillRpcServer::enqueueRequest(PrefillGenerateContext& prefill_context) {
     RTP_LLM_LOG_DEBUG("request [%ld] trans to stream success", prefill_context.request_id);
     auto stream = engine_->enqueue(prefill_context.generate_input);
     prefill_context.setStream(stream);
-    RTP_LLM_LOG_DEBUG("request [%ld] enqueue success", prefill_context.request_id);
+    // PD_SEP_DEBUG: Log enqueue with stream id
+    RTP_LLM_LOG_INFO(
+        "request [%ld] PD_SEP enqueueRequest done, stream_id=%ld", prefill_context.request_id, stream->streamId());
 }
 
 void PrefillRpcServer::remoteLoadCacheStart(PrefillGenerateContext& prefill_context) {
@@ -242,16 +244,28 @@ void PrefillRpcServer::remoteLoadCacheStart(PrefillGenerateContext& prefill_cont
 }
 
 void PrefillRpcServer::pollLocalOutput(PrefillGenerateContext& prefill_context) {
-    RTP_LLM_LOG_DEBUG("request [%ld] start to poll local output", prefill_context.request_id);
+    // PD_SEP_DEBUG: Log poll local output start
+    RTP_LLM_LOG_INFO("request [%ld] PD_SEP pollLocalOutput start, stream_id=%ld",
+                     prefill_context.request_id,
+                     prefill_context.getStream()->streamId());
     auto first_status = pollStreamOutput(prefill_context.server_context,
                                          prefill_context.request_key,
                                          prefill_context.rpc_context.writer,
                                          prefill_context.getStream());
     if (!first_status.ok()) {
+        // PD_SEP_DEBUG: Log poll local output error
+        RTP_LLM_LOG_WARNING("request [%ld] PD_SEP pollLocalOutput error, stream_id=%ld, status=%s",
+                            prefill_context.request_id,
+                            prefill_context.getStream()->streamId(),
+                            first_status.error_message().c_str());
         prefill_context.error_status = first_status;
         return;
     }
-    RTP_LLM_LOG_DEBUG("request [%ld] poll local output end", prefill_context.request_id);
+    // PD_SEP_DEBUG: Log poll local output end
+    RTP_LLM_LOG_INFO("request [%ld] PD_SEP pollLocalOutput end, stream_id=%ld, finished=%d",
+                     prefill_context.request_id,
+                     prefill_context.getStream()->streamId(),
+                     prefill_context.getStream()->finished());
 
     if (prefill_context.getStream()->finished()) {
         prefill_context.finished     = true;
@@ -264,14 +278,25 @@ void PrefillRpcServer::remoteLoadCacheEnd(PrefillGenerateContext& prefill_contex
     CLIENT_GRPC_RET_IF_ERROR(
         prefill_context, prefill_context.client_stream->Read(&load_response), ErrorCode::REMOTE_LOAD_KV_CACHE_FAILED);
     auto error_code = transRPCErrorCode(load_response.error_info().error_code());
+    // PD_SEP_DEBUG: Log remote load cache response
+    if (error_code != ErrorCode::NONE_ERROR) {
+        RTP_LLM_LOG_WARNING("request [%ld] PD_SEP remoteLoadCacheEnd error, stream_id=%ld, error_code=%d",
+                            prefill_context.request_id,
+                            prefill_context.getStream()->streamId(),
+                            (int)error_code);
+    }
     CLIENT_GRPC_RET_IF_ERROR(prefill_context, error_code == ErrorCode::NONE_ERROR, error_code);
-    RTP_LLM_LOG_DEBUG("request [%ld] remote load cache done", prefill_context.request_id);
+    RTP_LLM_LOG_INFO("request [%ld] PD_SEP remoteLoadCacheEnd done, stream_id=%ld",
+                     prefill_context.request_id,
+                     prefill_context.getStream()->streamId());
     prefill_context.getStream()->releaseResource();
 }
 
 void PrefillRpcServer::remoteGenerate(PrefillGenerateContext& prefill_context) {
-    RTP_LLM_LOG_DEBUG("request [%ld] start to remote generate", prefill_context.request_id);
     std::shared_ptr<GenerateStream> stream = prefill_context.getStream();
+    // PD_SEP_DEBUG: Log remote generate start
+    RTP_LLM_LOG_INFO(
+        "request [%ld] PD_SEP remoteGenerate start, stream_id=%ld", prefill_context.request_id, stream->streamId());
     RTP_LLM_LOG_DEBUG("remote generate stream[%ld]: %s", stream->streamId(), stream->debugString().c_str());
     vector<int> all_token   = stream->currentExecuteTokens();
     int         first_token = all_token[all_token.size() - 1];
@@ -299,7 +324,10 @@ void PrefillRpcServer::remoteGenerate(PrefillGenerateContext& prefill_context) {
 }
 
 void PrefillRpcServer::pollRemoteOutput(PrefillGenerateContext& prefill_context) {
-    RTP_LLM_LOG_DEBUG("request [%ld] start to poll remote output", prefill_context.request_id);
+    // PD_SEP_DEBUG: Log poll remote output start
+    RTP_LLM_LOG_INFO("request [%ld] PD_SEP pollRemoteOutput start, stream_id=%ld",
+                     prefill_context.request_id,
+                     prefill_context.getStream()->streamId());
     auto&             request_id = prefill_context.request_id;
     GenerateOutputsPB response;
     auto              prefill_total_reuse_len  = prefill_context.getStream()->initialReuseLength();
@@ -411,10 +439,25 @@ grpc::Status PrefillRpcServer::GenerateStreamCall(grpc::ServerContext*          
         prefill_context.stat_info.nextStage();
     } catch (const std::exception& e) {
         auto error_msg = "request [" + prefill_context.request_key + "] catch exception [" + e.what() + "]";
+        // PD_SEP_FIX: Ensure stream is stopped when exception occurs
+        if (prefill_context.getStream()) {
+            RTP_LLM_LOG_WARNING("request [%ld] PD_SEP catch exception, stopping stream [%ld]: %s",
+                                prefill_context.request_id,
+                                prefill_context.getStream()->streamId(),
+                                e.what());
+            prefill_context.getStream()->setStop(ErrorCode::EXCEPTION, error_msg);
+        }
         prefill_context.error_status = grpc::Status(grpc::StatusCode::INTERNAL, error_msg);
         return prefill_context.error_status;
     } catch (...) {
-        auto error_msg               = "request [" + prefill_context.request_key + "] catch unknown exception";
+        auto error_msg = "request [" + prefill_context.request_key + "] catch unknown exception";
+        // PD_SEP_FIX: Ensure stream is stopped when exception occurs
+        if (prefill_context.getStream()) {
+            RTP_LLM_LOG_WARNING("request [%ld] PD_SEP catch unknown exception, stopping stream [%ld]",
+                                prefill_context.request_id,
+                                prefill_context.getStream()->streamId());
+            prefill_context.getStream()->setStop(ErrorCode::EXCEPTION, error_msg);
+        }
         prefill_context.error_status = grpc::Status(grpc::StatusCode::INTERNAL, error_msg);
         return prefill_context.error_status;
     }

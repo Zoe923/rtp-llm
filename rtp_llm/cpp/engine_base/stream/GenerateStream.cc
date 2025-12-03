@@ -582,6 +582,11 @@ void GenerateStream::setStopWithoutLock(ErrorCode error_code, const std::string&
 }
 
 void GenerateStream::setStop(ErrorCode error_code, const std::string& error_msg) {
+    // PD_SEP_DEBUG: Log stream stop
+    RTP_LLM_LOG_INFO("stream [%ld] setStop called, error_code=%s, error_msg=%s",
+                     streamId(),
+                     ErrorCodeToString(error_code).c_str(),
+                     error_msg.c_str());
     std::lock_guard<std::mutex> lock(*output_mutex_);
     setStopWithoutLock(error_code, error_msg);
 }
@@ -761,16 +766,64 @@ void GenerateStream::matchEosToken(int batch_id) {
 
 bool GenerateStream::waitForRemoteGenerate() {
     std::unique_lock<std::mutex> lock(*output_mutex_);
-    // Wait until need_remote_generate_ is true or stream status -> done
-    cv_->wait(lock, [this] {
-        return need_remote_generate_ || generate_status_->status == StreamState::STOPPED
-               || generate_status_->status == StreamState::FINISHED;
-    });
+
+    // PD_SEP_DEBUG: Log wait start
+    RTP_LLM_LOG_INFO("stream [%ld] waitForRemoteGenerate start, need_remote_generate=%d, status=%d, timeout_ms=%ld",
+                     streamId(),
+                     need_remote_generate_,
+                     (int)generate_status_->status,
+                     getTimeoutMs());
+
+    auto start_time = std::chrono::steady_clock::now();
+    auto timeout_ms = getTimeoutMs();
+    if (timeout_ms <= 0) {
+        timeout_ms = 3600000;  // default 1 hour
+    }
+
+    // Use wait_for with periodic logging instead of infinite wait
+    const int64_t log_interval_ms = 30000;  // Log every 30 seconds
+    int64_t       waited_ms       = 0;
+    bool          condition_met   = false;
+
+    while (!condition_met && waited_ms < timeout_ms) {
+        int64_t wait_chunk_ms = std::min(log_interval_ms, timeout_ms - waited_ms);
+        condition_met         = cv_->wait_for(lock, std::chrono::milliseconds(wait_chunk_ms), [this] {
+            return need_remote_generate_ || generate_status_->status == StreamState::STOPPED
+                   || generate_status_->status == StreamState::FINISHED;
+        });
+
+        waited_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time)
+                        .count();
+
+        if (!condition_met && waited_ms >= log_interval_ms) {
+            // PD_SEP_DEBUG: Log long wait warning
+            RTP_LLM_LOG_WARNING("stream [%ld] waitForRemoteGenerate still waiting after %ld ms, "
+                                "need_remote_generate=%d, status=%d",
+                                streamId(),
+                                waited_ms,
+                                need_remote_generate_,
+                                (int)generate_status_->status);
+        }
+    }
+
+    // PD_SEP_DEBUG: Log wait end
+    RTP_LLM_LOG_INFO("stream [%ld] waitForRemoteGenerate end after %ld ms, condition_met=%d, "
+                     "need_remote_generate=%d, status=%d",
+                     streamId(),
+                     waited_ms,
+                     condition_met,
+                     need_remote_generate_,
+                     (int)generate_status_->status);
+
     // If stream status is abnormal, log the error info
     if (!need_remote_generate_ && generate_status_->status == StreamState::STOPPED) {
         RTP_LLM_LOG_WARNING("waitForRemoteGenerate exits due to stream [%ld] stopped, error: %s",
                             streamId(),
                             generate_status_->error_info.ToString().c_str());
+    }
+
+    if (!condition_met) {
+        RTP_LLM_LOG_WARNING("stream [%ld] waitForRemoteGenerate timeout after %ld ms", streamId(), waited_ms);
     }
 
     return need_remote_generate_;
