@@ -445,7 +445,7 @@ grpc::Status PrefillRpcServer::GenerateStreamCall(grpc::ServerContext*          
                                 prefill_context.request_id,
                                 prefill_context.getStream()->streamId(),
                                 e.what());
-            prefill_context.getStream()->setStop(ErrorCode::EXCEPTION, error_msg);
+            prefill_context.getStream()->setStop(ErrorCode::EXECUTION_EXCEPTION, error_msg);
         }
         prefill_context.error_status = grpc::Status(grpc::StatusCode::INTERNAL, error_msg);
         return prefill_context.error_status;
@@ -456,7 +456,7 @@ grpc::Status PrefillRpcServer::GenerateStreamCall(grpc::ServerContext*          
             RTP_LLM_LOG_WARNING("request [%ld] PD_SEP catch unknown exception, stopping stream [%ld]",
                                 prefill_context.request_id,
                                 prefill_context.getStream()->streamId());
-            prefill_context.getStream()->setStop(ErrorCode::EXCEPTION, error_msg);
+            prefill_context.getStream()->setStop(ErrorCode::EXECUTION_EXCEPTION, error_msg);
         }
         prefill_context.error_status = grpc::Status(grpc::StatusCode::INTERNAL, error_msg);
         return prefill_context.error_status;

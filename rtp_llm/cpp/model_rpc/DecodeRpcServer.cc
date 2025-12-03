@@ -743,7 +743,7 @@ grpc::Status DecodeRpcServer::RemoteGenerate(grpc::ServerContext* server_context
                                 decode_context.request_key.c_str(),
                                 decode_context.getStream()->streamId(),
                                 e.what());
-            decode_context.getStream()->setStop(ErrorCode::EXCEPTION, error_msg);
+            decode_context.getStream()->setStop(ErrorCode::EXECUTION_EXCEPTION, error_msg);
         }
         decode_context.error_status = grpc::Status(grpc::StatusCode::INTERNAL, error_msg);
         return decode_context.error_status;
@@ -754,7 +754,7 @@ grpc::Status DecodeRpcServer::RemoteGenerate(grpc::ServerContext* server_context
             RTP_LLM_LOG_WARNING("request [%s] PD_SEP catch unknown exception, stopping stream [%ld]",
                                 decode_context.request_key.c_str(),
                                 decode_context.getStream()->streamId());
-            decode_context.getStream()->setStop(ErrorCode::EXCEPTION, error_msg);
+            decode_context.getStream()->setStop(ErrorCode::EXECUTION_EXCEPTION, error_msg);
         }
         decode_context.error_status = grpc::Status(grpc::StatusCode::INTERNAL, error_msg);
         return decode_context.error_status;
