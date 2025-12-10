@@ -114,7 +114,7 @@ alias(
 genrule(
     name = "deep_gemm_so_in_pkg",
     srcs = [":deep_gemm_cpp.so"],
-    outs = ["deep_gemm/deep_gemm_cpp.so"],
+    outs = ["deep_gemm/_C.cpython-310-x86_64-linux-gnu.so"],
     cmd = "mkdir -p $(RULEDIR)/deep_gemm && cp $(location :deep_gemm_cpp.so) $@",
     visibility = ["//visibility:public"],
 )
