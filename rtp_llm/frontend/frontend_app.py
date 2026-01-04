@@ -23,6 +23,7 @@ from rtp_llm.distribute.worker_info import WorkerInfo, g_worker_info
 from rtp_llm.embedding.embedding_type import TYPE_STR, EmbeddingType
 from rtp_llm.frontend.frontend_server import FrontendServer
 from rtp_llm.openai.api_datatype import ChatCompletionRequest
+from rtp_llm.utils.grpc_client_wrapper import GrpcClientWrapper
 from rtp_llm.utils.util import AtomicCounter, async_request_server
 from rtp_llm.utils.version_info import VersionInfo
 
@@ -61,6 +62,7 @@ class FrontendApp(object):
             py_env_configs,
         )
         self.separated_frontend = separated_frontend
+        self.grpc_client = GrpcClientWrapper(g_worker_info.rpc_server_port)
         g_worker_info.server_port = WorkerInfo.server_port_offset(
             self.server_config.rank_id, g_worker_info.server_port
         )
