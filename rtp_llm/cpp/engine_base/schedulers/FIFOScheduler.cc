@@ -94,11 +94,33 @@ absl::Status FIFOScheduler::enqueue(const GenerateStreamPtr& stream) {
 absl::Status FIFOScheduler::batchEnqueue(const vector<GenerateStreamPtr>& streams) {
     {
         std::lock_guard<std::mutex> lock(lock_);
-        // Generate a unique batch ID for this batch
-        static std::random_device                     rd;
-        static std::mt19937                           gen(rd());
-        static std::uniform_int_distribution<int64_t> dis(1);
-        int64_t                                       batch_id = dis(gen);
+        std::string                 common_batch_group;
+        bool                        has_batch_group = false;
+        bool                        all_same_group  = true;
+
+        for (const auto& stream : streams) {
+            auto config = stream->generateConfig();
+            if (config && config->batch_group) {
+                if (!has_batch_group) {
+                    common_batch_group = *config->batch_group;
+                    has_batch_group    = true;
+                } else if (common_batch_group != *config->batch_group) {
+                    all_same_group = false;
+                    break;
+                }
+            } else {
+                all_same_group = false;
+                break;
+            }
+        }
+
+        int64_t batch_id = -1;
+        if (has_batch_group && all_same_group) {
+            static std::random_device                     rd;
+            static std::mt19937                           gen(rd());
+            static std::uniform_int_distribution<int64_t> dis(1);
+            batch_id = dis(gen);
+        }
 
         waiting_streams_.insert(waiting_streams_.end(), streams.begin(), streams.end());
         for (const auto& stream : streams) {
