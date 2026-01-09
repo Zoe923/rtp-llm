@@ -17,12 +17,12 @@ using namespace std;
 namespace rtp_llm {
 
 GenerateStream::GenerateStream(const shared_ptr<GenerateInput>& input,
-                               const ModelConfig&                model_config,
-                               const RuntimeConfig&               runtime_config,
-                               const ResourceContext&            resource_context,
-                               kmonitor::MetricsReporterPtr      metrics_reporter,
-                               size_t                             extra_reserve_token_num,
-                               bool                               perf_test):
+                               const ModelConfig&               model_config,
+                               const RuntimeConfig&             runtime_config,
+                               const ResourceContext&           resource_context,
+                               kmonitor::MetricsReporterPtr     metrics_reporter,
+                               size_t                           extra_reserve_token_num,
+                               bool                             perf_test):
     generate_input_(input),
     max_seq_len_(model_config.max_seq_len),
     vocab_size_(model_config.vocab_size),
@@ -182,6 +182,15 @@ int64_t GenerateStream::streamId() const {
     }
     return generate_input_->request_id;
 }
+
+int64_t GenerateStream::batchId() const {
+    return batch_id_;
+}
+
+void GenerateStream::setBatchId(int64_t batch_id) {
+    batch_id_ = batch_id;
+}
+
 int GenerateStream::loraId() const {
     return generate_input_->lora_id;
 }

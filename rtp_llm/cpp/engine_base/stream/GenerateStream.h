@@ -151,6 +151,8 @@ public:
     std::vector<int>                 textTokensMask() const;
     bool                             isStreaming() const;
     int64_t                          streamId() const;
+    int64_t                          batchId() const;
+    void                             setBatchId(int64_t batch_id);
     int                              loraId() const;
     std::string                      adapterName() const;
     rtp_llm::SpecialTokens           specialTokens() const;
@@ -541,6 +543,8 @@ protected:
     bool done_                  = false;
     bool released_              = false;
     bool need_release_resource_ = true;
+    // Batch ID for identifying streams from the same batchEnqueue call
+    int64_t batch_id_ = -1;
 
     bool return_all_probs_ = false;
 
