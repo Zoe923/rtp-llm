@@ -12,6 +12,29 @@ void StreamCacheResource::init(int batch_size) {
     constructCacheKey();
 }
 
+std::string StreamCacheResource::debugString() const {
+    std::stringstream debug_string;
+    debug_string << "StreamCacheResource { stream_id: " << stream_->streamId()
+                 << ",need_release_resource: " << need_release_resource_ << ", batch_resource: [";
+    for (size_t i = 0; i < batch_resource_.batchSize(); i++) {
+        debug_string << " [";
+        for (size_t j = 0; j < batch_resource_.batch_block_id[i].size(); j++) {
+            debug_string << batch_resource_.batch_block_id[i][j] << ", ";
+        }
+        debug_string << "],";
+    }
+    debug_string << ", cache_keys: ";
+    for (size_t i = 0; i < batch_resource_.batchSize(); i++) {
+        debug_string << " [";
+        for (size_t j = 0; j < batch_resource_.cache_keys[i].size(); j++) {
+            debug_string << batch_resource_.cache_keys[i][j] << ", ";
+        }
+        debug_string << "],";
+    }
+    debug_string << "}";
+    return debug_string.str();
+}
+
 void StreamCacheResource::freeBatchBlocks(size_t batch_id, vector<int>& blocks) {
     if (blocks.empty()) {
         return;
@@ -143,7 +166,27 @@ absl::Status StreamCacheResource::initKVBlock(size_t reserve_step) {
         }
     }
 
-    return incrKVBlock(reserve_step);
+    auto res = incrKVBlock(reserve_step);
+    if (reuseCache()) {
+        insertIntoCache();
+    }
+    return res;
+}
+
+void StreamCacheResource::insertIntoCache() {
+    reConstructCacheKeys();
+    for (size_t batch_id = 0; batch_id < batch_resource_.batchSize(); batch_id++) {
+        const auto&   blocks     = batch_resource_.blocks(batch_id);
+        auto          tokens_id  = stream_->completeTokenIdsVec(batch_id);
+        const auto&   cache_keys = stream_->cacheKeys(batch_id);
+        vector<float> loss;
+        if (stream_->getLoss()) {
+            loss = rtp_llm::buffer2vector<float>(*(stream_->getLoss()));
+        }
+        CacheManager::FreeInfo free_info(stream_->streamId(), tokens_id, cache_keys, blocks, loss, adapter_name_);
+        resource_context_.cache_manager->insertIntoCache(free_info);
+    }
+    return;
 }
 
 absl::Status StreamCacheResource::incrKVBlock(size_t reserve_step) {
@@ -390,6 +433,23 @@ bool StreamCacheResource::hasCacheKeys() const {
 const std::vector<int64_t>& StreamCacheResource::cacheKeys(int32_t batch_id) const {
     RTP_LLM_CHECK_WITH_INFO(batch_resource_.cache_keys.size() > batch_id, "cache_keys size is <= batch_id");
     return batch_resource_.cache_keys[batch_id];
+}
+
+void StreamCacheResource::insertIntoCache() {
+    for (size_t batch_id = 0; batch_id < batch_resource_.batchSize(); batch_id++) {
+        const auto& blocks     = batch_resource_.blocks(batch_id);
+        auto        tokens_id  = stream_->completeTokenIdsVec(batch_id);
+        auto        cache_keys = stream_->cacheKeys(batch_id);
+        if (!last_block_aligned_ && !cache_keys.empty()) {
+            cache_keys.pop_back();
+        }
+        std::vector<float> loss;
+        if (stream_->getLoss()) {
+            loss = rtp_llm::buffer2vector<float>(*(stream_->getLoss()));
+        }
+        CacheManager::FreeInfo free_info(stream_->streamId(), tokens_id, cache_keys, blocks, loss, adapter_name_);
+        resource_context_.cache_manager->insertIntoCache(free_info);
+    }
 }
 
 void StreamCacheResource::fakeInitKVBlock() {

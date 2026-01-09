@@ -43,7 +43,7 @@ public:
     void decrementRefCounter(const std::vector<int>& block_indices) {
         for (int index : block_indices) {
             if (ref_counter[index] == 0) {
-                RTP_LLM_FAIL("block:%d decrease zero ref count.", index);
+                RTP_LLM_FAIL("decrease %d zero ref count.", index);
                 return;
             } else {
                 ref_counter[index]--;

@@ -23,9 +23,9 @@ CacheManager::CacheManager(const CacheConfig&                 config,
                            rtp_llm::DeviceBase*               device,
                            bool                               warmup,
                            const kmonitor::MetricsReporterPtr metrics_reporter,
-                           const KVCacheConfig&                kv_cache_config,
-                           const ParallelismConfig&            parallelism_config,
-                           const RuntimeConfig&                runtime_config):
+                           const KVCacheConfig&               kv_cache_config,
+                           const ParallelismConfig&           parallelism_config,
+                           const RuntimeConfig&               runtime_config):
     config_(config),
     seq_size_per_block_(config.seq_size_per_block),
     block_cache_(config.seq_size_per_block),
@@ -59,8 +59,7 @@ CacheManager::CacheManager(const CacheConfig&                 config,
     }
 
     if (kv_cache_config_.memory_block_cache_size_mb > 0) {
-        int64_t block_nums =
-            (int64_t)kv_cache_config_.memory_block_cache_size_mb * 1024 * 1024 / config_.block_size;
+        int64_t block_nums = (int64_t)kv_cache_config_.memory_block_cache_size_mb * 1024 * 1024 / config_.block_size;
         RTP_LLM_LOG_INFO("init memory block cache, size: %d MB, block nums: %ld",
                          kv_cache_config_.memory_block_cache_size_mb,
                          block_nums);
@@ -69,14 +68,18 @@ CacheManager::CacheManager(const CacheConfig&                 config,
         memory_block_cache_config.block_nums = block_nums;
         memory_block_cache_config.refresh();
 
-        memory_block_cache_ = std::make_shared<MemoryBlockCache>(
-            memory_block_cache_config, device_, allocator_.get(), parallelism_config_, kv_cache_config_, runtime_config_, metrics_reporter_);
+        memory_block_cache_ = std::make_shared<MemoryBlockCache>(memory_block_cache_config,
+                                                                 device_,
+                                                                 allocator_.get(),
+                                                                 parallelism_config_,
+                                                                 kv_cache_config_,
+                                                                 runtime_config_,
+                                                                 metrics_reporter_);
         if (!memory_block_cache_->init()) {
             RTP_LLM_FAIL("memory block cache init failed");
         }
     }
 }
-
 
 void CacheManager::regUserMr(size_t model_id) {
     allocator_->regUserMr(model_id);
@@ -382,15 +385,34 @@ void CacheManager::freeWithCache(FreeInfo& free_info) {
     std::lock_guard<std::mutex> guard(mutex_);
     decrQueryRefCounter(free_info.block_indices);
     free_info.is_resident = false;
-    insertIntoCache(free_info);
+    insertCacheThenFree(free_info);
+}
+
+void CacheManager::insertIntoCache(FreeInfo& free_info) {
+    if (free_info.token_ids.size() > 1) {
+        size_t token_len = free_info.token_ids.size() - 1;
+        size_t block_len = std::min(std::min(free_info.block_indices.size(), free_info.cache_keys.size()),
+                                    token_len / seq_size_per_block_);
+        token_len        = block_len * seq_size_per_block_;
+        CacheItem item{{free_info.token_ids.begin(), free_info.token_ids.begin() + token_len},
+                       {free_info.block_indices.begin(), free_info.block_indices.begin() + block_len},
+                       {free_info.cache_keys.begin(), free_info.cache_keys.begin() + block_len},
+                       free_info.loss.empty() ?
+                           free_info.loss :
+                           std::vector<float>{free_info.loss.begin(), free_info.loss.begin() + token_len},
+                       free_info.is_resident};
+        incrBlockRefCounter(item.block_indices);
+        std::vector<int> indices = block_cache_.put(item);
+        freeImpl(indices);
+    }
 }
 
 void CacheManager::insertResidentCache(FreeInfo& free_info) {
     free_info.is_resident = true;
-    insertIntoCache(free_info);
+    insertCacheThenFree(free_info);
 }
 
-void CacheManager::insertIntoCache(FreeInfo& free_info) {
+void CacheManager::insertCacheThenFree(FreeInfo& free_info) {
     if (free_info.token_ids.size() > 1) {
         size_t token_len = free_info.token_ids.size() - 1;
         size_t block_len = std::min(std::min(free_info.block_indices.size(), free_info.cache_keys.size()),
@@ -423,6 +445,10 @@ void CacheManager::insertIntoCache(FreeInfo& free_info) {
 void CacheManager::incrRefCounter(const std::vector<int>& indices) {
     incrBlockRefCounter(indices);
     incrQueryRefCounter(indices);
+}
+
+void CacheManager::decrBlockRefCounter(const std::vector<int>& indices) {
+    block_ref_counter_.decrementRefCounter(indices);
 }
 
 void CacheManager::setKVBlockValue(int              block_index,

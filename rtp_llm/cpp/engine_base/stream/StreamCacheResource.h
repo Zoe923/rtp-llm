@@ -43,6 +43,7 @@ public:
     const std::vector<int64_t>& cacheKeys(int32_t batch_id) const;
     absl::Status                initKVBlock(size_t reserve_step = 0);
     absl::Status                incrKVBlock(size_t reserve_step = 0);
+    void                        insertIntoCache();
     void                        fakeInitKVBlock();
     int                         tryReleaseKVBlock(size_t nums);
     absl::Status                releaseSequenceKVCache(size_t total_seq_len, size_t release_seq_len);
@@ -108,22 +109,7 @@ public:
     bool enable3FS() const;
     bool enableMemoryBlockCache() const;
 
-    std::string debugString() const {
-        std::stringstream debug_string;
-        debug_string << "StreamCacheResource {"
-                     << "need_release_resource: " << need_release_resource_ << ", batch_resource: [";
-
-        for (size_t i = 0; i < batch_resource_.batchSize(); i++) {
-            debug_string << " [";
-            for (size_t j = 0; j < batch_resource_.batch_block_id[i].size(); j++) {
-                debug_string << batch_resource_.batch_block_id[i][j] << " ";
-            }
-            debug_string << "],";
-        }
-
-        debug_string << "}";
-        return debug_string.str();
-    }
+    std::string debugString() const;
 
 private:
     GenerateStream*          stream_;
