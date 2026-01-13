@@ -22,8 +22,6 @@ class MlaRotaryEmbeddingOp(object):
         rope_head_dim: int,
         token_per_block: int,
         is_neox_style: bool,
-        max_bs: int = 0,
-        max_context_len: int = 0,
     ) -> None:
         if cos_sin_cache is None:
             raise Exception(f"RotaryEmbedding need cos_sin_cache but got none")
@@ -34,11 +32,6 @@ class MlaRotaryEmbeddingOp(object):
         self.kv_lora_rank = kv_lora_rank
         self.rope_head_dim = rope_head_dim
         self.token_per_block = token_per_block
-        self.kv_indices_d = torch.empty(
-            0,
-            dtype=torch.int32,
-            device="cuda",
-        )
 
     def prepare(self, attention_inputs: PyAttentionInputs):
         return None
@@ -74,11 +67,7 @@ class MlaRotaryEmbeddingOp(object):
                 rope_params.positions_d,
                 k_cache,
                 v_cache,
-                (
-                    self.kv_indices_d
-                    if self.kv_indices_d.size(0) > 0
-                    else rope_params.page_indice_d
-                ),
+                rope_params.page_indice_d,
                 rope_params.decode_page_indptr_d,
                 rope_params.paged_kv_last_page_len_d,
             )

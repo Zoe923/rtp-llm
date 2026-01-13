@@ -200,24 +200,24 @@ class MlaFlashInferPrefillOp(object):
 
             self.prefill_wrapper = TRTAttnOp(attn_configs)
             return
-        else:
-            self.prefill_wrapper = BatchPrefillWithRaggedKVCacheWrapper(
-                g_workspace_buffer,
-                "NHD",
-                backend="auto",
-                use_cuda_graph=False,
-            )
+
+        self.prefill_wrapper = BatchPrefillWithRaggedKVCacheWrapper(
+            g_workspace_buffer,
+            "NHD",
+            backend="auto",
+            use_cuda_graph=False,
+        )
 
     def support(self, attention_inputs: PyAttentionInputs):
         return self.use_mla and attention_inputs.is_prefill
 
     def prepare(self, attention_inputs: PyAttentionInputs):
         check_attention_inputs(attention_inputs)
-        mla_params = rtp_llm_ops.fill_prefill_mla_params(
-            attention_inputs.input_lengths,
+        mla_params = rtp_llm_ops.fill_mla_params(
             attention_inputs.prefix_lengths,
+            attention_inputs.sequence_lengths,
+            attention_inputs.input_lengths,
             attention_inputs.kv_cache_block_id_host,
-            attention_inputs.input_lengths.size(0),
             self.token_per_block,
         )
         self.plan(mla_params)
@@ -231,8 +231,8 @@ class MlaFlashInferPrefillOp(object):
 
     def plan(self, mla_params: Any):
         self.prefill_wrapper.plan(
-            mla_params.qo_indptr_h,
-            mla_params.prefill_page_indptr_h,
+            mla_params.qo_indptr_d,
+            mla_params.prefill_page_indptr_d,
             self.num_heads,
             self.num_heads,
             self.qk_rope_head_dim + self.qk_nope_head_dim,
@@ -451,10 +451,11 @@ class MlaFlashInferDecodeOp(object):
 
     def prepare(self, attention_inputs: PyAttentionInputs):
         check_attention_inputs(attention_inputs)
-        fmha_params = rtp_llm_ops.fill_decode_mla_params(
+        fmha_params = rtp_llm_ops.fill_mla_params(
+            attention_inputs.prefix_lengths,
             attention_inputs.sequence_lengths,
+            attention_inputs.input_lengths,
             attention_inputs.kv_cache_block_id_host,
-            attention_inputs.input_lengths.size(0),
             self.token_per_block,
         )
         self.plan(fmha_params)

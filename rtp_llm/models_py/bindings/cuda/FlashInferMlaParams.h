@@ -32,32 +32,29 @@ private:
     void
     refreshBuffer(int batch_size, int input_token_num, int page_num, int reuse_page_num, int batch_reuse_info_size);
 
-    // Internal method to fill prefill params directly into HOST tensors
-    void fillPrefillParamsInternal(torch::Tensor t_input_lengths,
-                                   torch::Tensor t_prefix_lengths,
-                                   torch::Tensor t_kv_cache_block_id_host,
-                                   int           batch_size,
-                                   int           seq_size_per_block,
-                                   int&          input_token_num,
-                                   int&          page_num,
-                                   int&          reuse_page_num,
-                                   int&          batch_reuse_info_size);
-
-    // Internal method to fill decode params directly into HOST tensors
-    void fillDecodeParamsInternal(torch::Tensor t_sequence_lengths,
-                                  torch::Tensor t_kv_cache_block_id_host,
-                                  int           batch_size,
-                                  int           seq_size_per_block,
-                                  int&          input_token_num,
-                                  int&          page_num,
-                                  int&          reuse_page_num,
-                                  int&          batch_reuse_info_size);
+    // Internal method to fill params directly into HOST tensors
+    void fillParamsInternal(torch::Tensor t_prefix_lengths,
+                            torch::Tensor t_sequence_lengths,
+                            torch::Tensor t_input_lengths,
+                            torch::Tensor t_kv_cache_block_id_host,
+                            int           batch_size,
+                            int           seq_size_per_block,
+                            int&          input_token_num,
+                            int&          page_num,
+                            int&          reuse_page_num,
+                            int&          batch_reuse_info_size);
 
     // Ensure tensors are allocated with sufficient size
     void
     ensureTensorSize(int batch_size, int input_token_num, int page_num, int reuse_page_num, int batch_reuse_info_size);
 
 public:
+    void fillParams(torch::Tensor t_prefix_lengths,
+                    torch::Tensor t_sequence_lengths,
+                    torch::Tensor t_input_lengths,
+                    torch::Tensor t_kv_cache_block_id_host,
+                    int           seq_size_per_block);
+
     // Tensor views into buf_h and buf_d
     torch::Tensor batch_indice_h;
     torch::Tensor page_indice_h;
@@ -81,24 +78,16 @@ public:
     torch::Tensor positions_d;
     torch::Tensor batch_reuse_info_vec_d;
 
-    // Prefill mode: fill parameters for prefill attention
-    void fillPrefillParams(torch::Tensor input_lengths,
-                           torch::Tensor prefix_lengths,
-                           torch::Tensor kv_cache_block_id_host,
-                           int           batch_size,
-                           int           seq_size_per_block);
-
-    // Decode mode: fill parameters for decode attention
-    void fillDecodeParams(torch::Tensor sequence_lengths,
-                          torch::Tensor kv_cache_block_id_host,
-                          int           batch_size,
-                          int           seq_size_per_block);
-    void fillParams(torch::Tensor sequence_lengths,
-                    torch::Tensor input_lengths,
-                    torch::Tensor kv_cache_block_id_host,
-                    int           batch_size,
-                    int           seq_size_per_block,
-                    torch::Tensor prefix_lengths = torch::Tensor()) override;
+    torch::Tensor batch_indice;
+    torch::Tensor positions;
+    torch::Tensor paged_kv_last_page_len;
+    torch::Tensor kvlen;
+    torch::Tensor page_indice;
+    torch::Tensor reuse_cache_page_indice;
+    torch::Tensor decode_page_indptr;
+    torch::Tensor prefill_page_indptr;
+    torch::Tensor qo_indptr;
+    torch::Tensor batch_reuse_info_vec;
 };
 void registerPyFlashInferMlaParams(pybind11::module& m);
 
