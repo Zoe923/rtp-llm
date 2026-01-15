@@ -66,17 +66,19 @@ class MlaFlashInferPrefillImpl(FMHAPrefillImplBase):
         self.absorb_opt_len = (
             fmha_config.absorb_opt_len if fmha_config is not None else 1024
         )
-        self.absorb_fmha = MlaFlashInferDecodeOp(
-            attn_configs.head_num,
-            attn_configs.kv_lora_rank,
-            attn_configs.rope_head_dim,
-            attn_configs.nope_head_dim,
-            attn_configs.tokens_per_block,
-            attn_configs.softmax_extra_scale,
-            attn_configs.use_mla,
-            weights,
-        )
-        self.absorb_fmha.plan(self.fmha_params)
+        q_len = attn_inputs.input_lengths.sum().item()
+        if q_len < self.absorb_opt_len and self.has_reuse_cache:
+            self.absorb_fmha = MlaFlashInferDecodeOp(
+                attn_configs.head_num,
+                attn_configs.kv_lora_rank,
+                attn_configs.rope_head_dim,
+                attn_configs.nope_head_dim,
+                attn_configs.tokens_per_block,
+                attn_configs.softmax_extra_scale,
+                attn_configs.use_mla,
+                weights,
+            )
+            self.absorb_fmha.plan(self.fmha_params)
 
     @staticmethod
     def fmha_type() -> FMHAType:

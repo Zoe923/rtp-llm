@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -418,6 +419,7 @@ class MlaFlashInferDecodeOp(object):
         self.softmax_extra_scale = softmax_extra_scale
         self.weights = weights
         self.use_mla = use_mla
+        self.use_cuda_graph = is_cuda_graph
         global g_workspace_buffer
         self.kv_indices_d = torch.empty(
             ((max_context_len + self.token_per_block - 1) // self.token_per_block)
@@ -462,6 +464,15 @@ class MlaFlashInferDecodeOp(object):
         return fmha_params
 
     def plan(self, fmha_params: Any):
+        if self.use_cuda_graph and self.kv_indices_d.size(
+            0
+        ) < fmha_params.page_indice_d.size(0):
+            logging.error(
+                f"kv_indices_d.size(0): {self.kv_indices_d.size(0)}, fmha_params.page_indice_d.size(0): {fmha_params.page_indice_d.size(0)}"
+            )
+            raise ValueError(
+                f"kv_indices_d.size(0) < fmha_params.page_indice_d.size(0)"
+            )
         self.mla_wrapper.plan(
             fmha_params.qo_indptr_h,
             fmha_params.decode_page_indptr_h,
