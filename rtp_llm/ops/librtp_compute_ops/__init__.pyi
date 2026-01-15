@@ -134,7 +134,6 @@ class KVCache:
     @kv_scale_base.setter
     def kv_scale_base(self, arg0: torch.Tensor) -> None:
         ...
-
     @property
     def layer_id(self) -> int:
         """
@@ -144,19 +143,6 @@ class KVCache:
     def seq_size_per_block(self) -> int:
         """
         Sequence size per block
-        """
-    @property
-    def v_cache_base(self) -> torch.Tensor:
-        """
-        Value cache base tensor
-        """
-    @v_cache_base.setter
-    def v_cache_base(self, arg0: torch.Tensor) -> None:
-        ...
-    @property
-    def v_scale_base(self) -> torch.Tensor:
-        """
-        Value cache scale tensor
         """
 class MlaParams(ParamsBase):
     def __init__(self) -> None:

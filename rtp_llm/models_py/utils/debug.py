@@ -49,8 +49,7 @@ def cudagraph_debug_kernel(
     row_len = data.size(1) if row_len == 0 else row_len
     n = data.size(1) if (n == 0 or n > data.size(1)) else n
     m = data.size(0) if (m == 0 or m > data.size(0)) else m
-    debug_op = rtp_llm_ops.DebugKernelOp()
-    debug_op.forward(
+    rtp_llm_ops.debug_kernel(
         data=data,
         start_row=0,
         start_col=0,
