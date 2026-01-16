@@ -3,7 +3,7 @@ import libth_transformer_config
 import torch
 import typing
 from . import rtp_llm_ops
-__all__: list[str] = ['BertEmbeddingInputs', 'DeviceExporter', 'DeviceType', 'KVCache', 'MlaParams', 'ParamsBase', 'PyAttentionInputs', 'PyCacheStoreInputs', 'PyCaptureMetaData', 'PyModelInitResources', 'PyModelInputs', 'PyModelOutputs', 'PyPrefillCudaGaphCopyParams', 'TypeMeta', 'get_device', 'get_typemeta', 'init_device', 'rtp_llm_ops']
+__all__: list[str] = ['BertEmbeddingInputs', 'DeviceExporter', 'DeviceType', 'KVCache', 'ParamsBase', 'PyAttentionInputs', 'PyCacheStoreInputs', 'PyCaptureMetaData', 'PyModelInitResources', 'PyModelInputs', 'PyModelOutputs', 'PyPrefillCudaGaphCopyParams', 'TypeMeta', 'get_device', 'get_typemeta', 'init_device', 'rtp_llm_ops']
 class BertEmbeddingInputs:
     @typing.overload
     def __init__(self) -> None:
@@ -144,39 +144,6 @@ class KVCache:
         """
         Sequence size per block
         """
-class MlaParams(ParamsBase):
-    def __init__(self) -> None:
-        ...
-    @property
-    def batch_indice(self) -> torch.Tensor:
-        ...
-    @property
-    def batch_reuse_info_vec(self) -> torch.Tensor:
-        ...
-    @property
-    def decode_page_indptr(self) -> torch.Tensor:
-        ...
-    @property
-    def kvlen(self) -> torch.Tensor:
-        ...
-    @property
-    def page_indice(self) -> torch.Tensor:
-        ...
-    @property
-    def paged_kv_last_page_len(self) -> torch.Tensor:
-        ...
-    @property
-    def positions(self) -> torch.Tensor:
-        ...
-    @property
-    def prefill_page_indptr(self) -> torch.Tensor:
-        ...
-    @property
-    def qo_indptr(self) -> torch.Tensor:
-        ...
-    @property
-    def reuse_cache_page_indice(self) -> torch.Tensor:
-        ...
 class ParamsBase:
     def __init__(self) -> None:
         ...
@@ -198,6 +165,7 @@ class PyAttentionInputs:
     padding_offset: torch.Tensor
     prefix_lengths: torch.Tensor
     sequence_lengths: torch.Tensor
+    sequence_lengths_plus_1_d: torch.Tensor
     total_tokens: int
     def __init__(self) -> None:
         ...
@@ -217,9 +185,6 @@ class PyAttentionInputs:
         ...
     @property
     def prefix_lengths_d(self) -> torch.Tensor:
-        ...
-    @property
-    def sequence_lengths_plus_1_d(self) -> torch.Tensor:
         ...
 class PyCacheStoreInputs:
     def __init__(self) -> None:

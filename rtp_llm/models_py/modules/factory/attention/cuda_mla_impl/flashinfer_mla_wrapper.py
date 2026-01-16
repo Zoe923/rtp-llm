@@ -9,7 +9,7 @@ from rtp_llm.models_py.modules.factory.attention.fmha_impl_base import (
     FMHAPrefillImplBase,
 )
 from rtp_llm.ops import AttentionConfigs, FMHAConfig, FMHAType
-from rtp_llm.ops.compute_ops import KVCache, PyAttentionInputs
+from rtp_llm.ops.compute_ops import KVCache, PyAttentionInputs, rtp_llm_ops
 
 from .flashinfer_mla import (
     MlaFlashInferDecodeOp,
@@ -83,6 +83,10 @@ class MlaFlashInferPrefillImpl(FMHAPrefillImplBase):
     @staticmethod
     def fmha_type() -> FMHAType:
         return FMHAType.FLASH_INFER
+
+    def prepare(self, attn_inputs: PyAttentionInputs):
+        super().prepare(attn_inputs)
+        self.rope_params = self.fmha_params
 
     def compute_prefill_context(
         self,
@@ -166,6 +170,7 @@ class MlaFlashInferDecodeImpl(FMHADecodeImplBase):
         is_cuda_graph: bool = False,
     ) -> None:
         warmup_flashinfer_python()
+        self.seq_size_per_block = attn_configs.tokens_per_block
         super().__init__(
             MlaFlashInferDecodeOp(
                 attn_configs.head_num,
@@ -191,7 +196,11 @@ class MlaFlashInferDecodeImpl(FMHADecodeImplBase):
             ),
             attn_inputs,
         )
-        self.seq_size_per_block = attn_configs.tokens_per_block
+
+    def create_params(self, attn_inputs: PyAttentionInputs):
+        if self.support_ and self.fmha_impl is not None:
+            self.fmha_params = rtp_llm_ops.FlashInferMlaAttnParams()
+            self.rope_params = self.fmha_params
 
     @staticmethod
     def fmha_type() -> FMHAType:
@@ -201,31 +210,15 @@ class MlaFlashInferDecodeImpl(FMHADecodeImplBase):
         return True
 
     def prepare(self, attn_inputs: PyAttentionInputs):
-        """Unified prepare method supporting initial preparation and replay.
+        """Update fmha_params for prepare or CUDA Graph replay.
 
-        Automatically detects whether this is first-time preparation or replay
-        based on whether fmha_params exists.
+        Note: fmha_params is initialized in __init__, this method only updates it.
         """
         assert self.fmha_impl is not None
+        assert (
+            self.fmha_params is not None
+        ), "fmha_params should be initialized in __init__"
 
-        # Detect if this is first call or replay
-        is_first_call = self.fmha_params is None
-
-        if is_first_call:
-            # First-time: create new params
-            self.fmha_params = self.fmha_impl.prepare(attn_inputs)
-            # Share reference: rope_params and fmha_params point to same object
-            self.rope_params = self.fmha_params
-        else:
-            # Replay: update existing params
-            self._update_params(attn_inputs)
-
-    def _update_params(self, attn_inputs: PyAttentionInputs):
-        """Update existing fmha_params for CUDA Graph replay.
-
-        Note: Since rope_params and fmha_params share the same object reference,
-        updating fmha_params automatically reflects in rope_params.
-        """
         self.fmha_params.fill_params(
             attn_inputs.prefix_lengths,
             attn_inputs.sequence_lengths,

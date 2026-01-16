@@ -155,7 +155,6 @@ class MLATest(TestCase):
             cos_sin_cache,
             quant_config=self.config.quant_config,
         )
-        fmha_impl.prepare(attn_inputs)
 
         q = torch.randn(
             [
@@ -196,7 +195,10 @@ class MLATest(TestCase):
 
         k_cache, v_cache = torch.split(
             kv_cache.kv_cache_base,
-            [self.config.attn_config.kv_lora_rank, self.config.attn_config.rope_head_dim],
+            [
+                self.config.attn_config.kv_lora_rank,
+                self.config.attn_config.rope_head_dim,
+            ],
             dim=-1,
         )
         page.append_paged_mla_kv_cache(

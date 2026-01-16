@@ -40,13 +40,19 @@ class FlashInferDecodeImpl(FMHADecodeImplBase):
     def __init__(
         self, attn_configs: AttentionConfigs, attn_inputs: PyAttentionInputs
     ) -> None:
+        self.seq_size_per_block = attn_configs.tokens_per_block
         super().__init__(
             FlashInferDecodeOp(attn_configs),
             FusedRopeKVCacheDecodeOp(attn_configs),
             attn_inputs,
         )
-        self.seq_size_per_block = attn_configs.tokens_per_block
         self.support_ = self.support_ and (not attn_configs.use_mla)
+
+    def create_params(self, attn_inputs: PyAttentionInputs):
+        assert self.fmha_impl is not None
+        self.fmha_params = self.fmha_impl.prepare(attn_inputs)
+        assert self.rope_kvcache_impl is not None
+        self.rope_params = self.rope_kvcache_impl.prepare(attn_inputs)
 
     @staticmethod
     def fmha_type() -> FMHAType:
@@ -55,7 +61,7 @@ class FlashInferDecodeImpl(FMHADecodeImplBase):
     def support_cuda_graph(self) -> bool:
         return True
 
-    def _update_params(self, attn_inputs: PyAttentionInputs):
+    def prepare(self, attn_inputs: PyAttentionInputs):
         batch_size = attn_inputs.input_lengths.size(0)
         self.fmha_params.fill_params(
             attn_inputs.sequence_lengths,

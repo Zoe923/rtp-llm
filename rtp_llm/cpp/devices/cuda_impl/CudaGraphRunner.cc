@@ -51,7 +51,6 @@ void optimizedCopyAsync(const torch::Tensor& src, torch::Tensor& dst, size_t siz
 
 py::object CudaGraphRunner::normalForward(PyModelInputs& inputs) {
     auto attn_pyobj = py_attn_pyobj_method_(inputs, false);
-    attn_pyobj.attr("prepare")(inputs.attention_inputs);
     return py_forward_method_(inputs, attn_pyobj);
 }
 
