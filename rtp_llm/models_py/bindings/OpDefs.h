@@ -104,6 +104,10 @@ struct PyModelInputs {
     torch::Tensor       input_hiddens;
     PyAttentionInputs   attention_inputs;
     BertEmbeddingInputs bert_embedding_inputs;
+
+    // ========== DeepEP 双模式支持 ==========
+    bool has_prefill_global{false};  // 全局是否有 prefill（跨 DP ranks）
+    // ========== DeepEP 双模式支持结束 ==========
 };
 
 struct PyModelOutputs {

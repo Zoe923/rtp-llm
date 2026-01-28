@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import Any, Dict, Optional, Tuple
 
@@ -52,7 +53,12 @@ class DeepEpLowLatencyRouter(FusedMoeDataRouter):
         resolver = MoeConfigResolver()
         checker.check(get_sm()[0] >= 9)
         checker.check(resolver.is_ep_enabled(config))
-        checker.check(resolver.use_low_latency(config))
+
+        # 支持双模式或 LowLatency 模式
+        support_dual_mode = getattr(config.moe_config, "support_dual_mode", False)
+        use_low_latency = resolver.use_low_latency(config)
+        checker.check(support_dual_mode or use_low_latency)
+
         checker.check(DeepEPWrapper.supported())
 
     def __init__(
@@ -77,12 +83,31 @@ class DeepEpLowLatencyRouter(FusedMoeDataRouter):
             self.config, self._ll_num_max_token_per_rank
         )
         wrapper = DeepEPWrapper.get_instance(deepep_config)
-        assert (
-            wrapper.mode == DeepEPMode.LOW_LATENCY
-        ), "DeepEP mode should be LOW_LATENCY"
-        self._buffer = wrapper.buffer
+
+        # 获取 LowLatency buffer（支持双模式）
+        if wrapper.mode == DeepEPMode.DUAL:
+            # 双模式：显式获取 LowLatency buffer
+            self._buffer = wrapper.get_buffer(use_low_latency=True)
+            # 双模式下：使用自己计算的值，而不是从wrapper获取（wrapper保存的是Normal创建时的值0）
+            self._num_max_dispatch_tokens_per_rank = self._ll_num_max_token_per_rank
+            logging.info(
+                f"[DeepEpLowLatencyRouter] rank={config.ep_rank}: Using LowLatency buffer from DUAL mode, "
+                f"ll_num_max_token_per_rank={self._num_max_dispatch_tokens_per_rank}"
+            )
+        else:
+            # 单模式：验证并使用默认 buffer
+            assert (
+                wrapper.mode == DeepEPMode.LOW_LATENCY
+            ), f"DeepEP mode should be LOW_LATENCY, got {wrapper.mode}"
+            self._buffer = wrapper.buffer
+            # 单模式：从wrapper获取
+            self._num_max_dispatch_tokens_per_rank = wrapper.ll_num_max_token_per_rank
+            logging.debug(
+                f"[DeepEpLowLatencyRouter] rank={config.ep_rank}: Using LowLatency buffer from single mode, "
+                f"ll_num_max_token_per_rank={self._num_max_dispatch_tokens_per_rank}"
+            )
+
         self._num_topk = wrapper.num_topk
-        self._num_max_dispatch_tokens_per_rank = wrapper.ll_num_max_token_per_rank
         self._use_fp8_dispatch = use_fp8_dispatch
         self._zero_copy = False
         self._async_finish = False

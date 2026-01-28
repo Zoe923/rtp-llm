@@ -57,7 +57,33 @@ bool CudaDevice::initDeepEPBuffer() {
     int64_t num_nvl_bytes    = 0;
     int64_t num_rdma_bytes   = 0;
     int     num_qps_per_rank = 1;
-    if (init_params_.use_deepep_low_latency) {  // low-latency mode
+
+    // ========== DeepEP 双模式：计算内存需求 ==========
+    if (init_params_.moe_config.support_dual_mode) {
+        // 双模式：需要同时支持Normal和LowLatency两个buffer
+        // 使用LowLatency的内存需求作为基准，乘以2以容纳两个buffer
+        // 乘以2不会破坏原有的对齐（getLowLatencyRdmaSizeHint返回的值已对齐）
+        int64_t base_rdma_bytes = DeepEPBuffer::getLowLatencyRdmaSizeHint(
+            ll_num_max_token_per_rank, init_params_.hidden_size, world_size, num_experts);
+        num_rdma_bytes = base_rdma_bytes * 2;  // 双模式：乘以2
+
+        if (init_params_.use_deepep_internode) {
+            num_nvl_bytes = int(2e9);
+        } else {
+            num_nvl_bytes = int(2e9);
+        }
+
+        num_qps_per_rank = num_experts / init_params_.ep_size;
+
+        // 🔧 关键修复：Dual mode需要LowLatency优化
+        setenv("ACCL_LOW_LATENCY_OPTIMIZE", "1", 1);
+
+        RTP_LLM_LOG_INFO("DeepEP Dual mode: base_rdma=%ld MB, total_rdma=%ld MB (x2 for dual buffers)",
+                         base_rdma_bytes / 1000000,
+                         num_rdma_bytes / 1000000);
+    }
+    // ========== 单模式（原有逻辑）==========
+    else if (init_params_.use_deepep_low_latency) {  // low-latency mode
         num_rdma_bytes = DeepEPBuffer::getLowLatencyRdmaSizeHint(
             ll_num_max_token_per_rank, init_params_.hidden_size, world_size, num_experts);
         num_qps_per_rank = num_experts / init_params_.ep_size;
@@ -85,13 +111,18 @@ bool CudaDevice::initDeepEPBuffer() {
                          num_rdma_bytes,
                          world_rank,
                          world_size);
+
+        // 🔧 关键修复：Dual mode需要low_latency_mode=true
+        // 因为dual mode buffer需要LowLatency的底层能力
+        bool low_latency_mode = init_params_.moe_config.support_dual_mode ? true : init_params_.use_deepep_low_latency;
+
         deepep_buffer_.reset(new DeepEPBuffer(this,
                                               world_rank,
                                               local_world_size,
                                               world_size,
                                               num_nvl_bytes,
                                               num_rdma_bytes,
-                                              init_params_.use_deepep_low_latency,
+                                              low_latency_mode,
                                               num_qps_per_rank));
         bool success = deepep_buffer_->init();
         if (!success) {

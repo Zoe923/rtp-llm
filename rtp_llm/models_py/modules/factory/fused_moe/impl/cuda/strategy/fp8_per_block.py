@@ -49,6 +49,9 @@ class CudaFp8PerBlockEpLowLatencyStrategy(MoeStrategy):
         resolver = MoeConfigResolver()
         quant_method = resolver.get_quant_method(config)
         checker.check(quant_method == "FP8_PER_BLOCK")
+        # 仅当明确设置了 use_deepep_low_latency 时才处理
+        # 这确保在双模式下创建 Normal FusedMoe 时不会选到这个 Strategy
+        checker.check(config.moe_config.use_deepep_low_latency == True)
 
     def get_attributes(self) -> StrategyAttributes:
         from rtp_llm.models_py.modules.factory.fused_moe.impl.cuda.executors.deepgemm_masked_executor import (
@@ -71,6 +74,15 @@ class CudaFp8PerBlockEpLowLatencyStrategy(MoeStrategy):
 
 class CudaFp8PerBlockEpNormalStrategy(MoeStrategy):
     """CUDA FP8 PerBlock EP normal mode strategy"""
+
+    @classmethod
+    def check_conditions(cls, checker: Any, config: MoEConfigAdapter) -> None:
+        resolver = MoeConfigResolver()
+        quant_method = resolver.get_quant_method(config)
+        checker.check(quant_method == "FP8_PER_BLOCK")
+        # 仅当未设置 use_deepep_low_latency 或设置为 False 时才处理
+        # 这确保在双模式下创建 Normal FusedMoe 时选到这个 Strategy
+        checker.check(config.moe_config.use_deepep_low_latency == False)
 
     def get_attributes(self) -> StrategyAttributes:
         from rtp_llm.models_py.modules.factory.fused_moe.impl.cuda.executors.deepgemm_continous_executor import (

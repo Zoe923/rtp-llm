@@ -59,15 +59,81 @@ class GenericMoeLayer(nn.Module):
         self.select_topk = SelectTopk(
             config, moe_config.fake_balance_expert, parallelism_config.dp_rank
         )
-        config_adapter = MoEConfigAdapter(
-            model_config=config,
-            parallelism_config=parallelism_config,
-            moe_config=moe_config,
-            max_generate_batch_size=max_generate_batch_size,
-            quant_config=quant_config,
-            enable_cuda_graph=enable_cuda_graph,
+
+        # 检查双模式：只有在 ep_size > 1 时才有意义（确保会走 DeepEP）
+        support_dual_mode_config = getattr(moe_config, "support_dual_mode", False)
+        ep_size = parallelism_config.ep_size
+        self.support_dual_mode = support_dual_mode_config and ep_size > 1
+
+        logging.info(
+            f"[GenericMoeLayer.__init__] support_dual_mode_config={support_dual_mode_config}, "
+            f"ep_size={ep_size}, final support_dual_mode={self.support_dual_mode}"
         )
-        self.fused_moe = FusedMoeFactory().create_fused_moe(config_adapter, weights)
+
+        if self.support_dual_mode:
+            # ========== 双模式：创建两个 FusedMoe ==========
+            import copy
+
+            logging.info(
+                "[GenericMoeLayer] Creating DUAL mode FusedMoe (Normal + LowLatency)"
+            )
+
+            # Normal 模式
+            moe_config_normal = copy.deepcopy(moe_config)
+            moe_config_normal.use_deepep_low_latency = False
+            moe_config_normal.support_dual_mode = True
+
+            config_adapter_normal = MoEConfigAdapter(
+                model_config=config,
+                parallelism_config=parallelism_config,
+                moe_config=moe_config_normal,
+                max_generate_batch_size=max_generate_batch_size,
+                quant_config=quant_config,
+                enable_cuda_graph=False,  # Normal 不支持 CUDA Graph
+            )
+            self.fused_moe_normal = FusedMoeFactory().create_fused_moe(
+                config_adapter_normal, weights
+            )
+            logging.info(
+                f"[GenericMoeLayer] Normal FusedMoe created: "
+                f"{self.fused_moe_normal.router.__class__.__name__}"
+            )
+
+            # LowLatency 模式
+            moe_config_lowlatency = copy.deepcopy(moe_config)
+            moe_config_lowlatency.use_deepep_low_latency = True
+            moe_config_lowlatency.support_dual_mode = True
+
+            config_adapter_lowlatency = MoEConfigAdapter(
+                model_config=config,
+                parallelism_config=parallelism_config,
+                moe_config=moe_config_lowlatency,
+                max_generate_batch_size=max_generate_batch_size,
+                quant_config=quant_config,
+                enable_cuda_graph=enable_cuda_graph,  # LowLatency 支持 CUDA Graph
+            )
+            self.fused_moe_lowlatency = FusedMoeFactory().create_fused_moe(
+                config_adapter_lowlatency, weights
+            )
+            logging.info(
+                f"[GenericMoeLayer] LowLatency FusedMoe created: "
+                f"{self.fused_moe_lowlatency.router.__class__.__name__}"
+            )
+
+            self.fused_moe = None
+        else:
+            # ========== 单模式（向后兼容）==========
+            config_adapter = MoEConfigAdapter(
+                model_config=config,
+                parallelism_config=parallelism_config,
+                moe_config=moe_config,
+                max_generate_batch_size=max_generate_batch_size,
+                quant_config=quant_config,
+                enable_cuda_graph=enable_cuda_graph,
+            )
+            self.fused_moe = FusedMoeFactory().create_fused_moe(config_adapter, weights)
+            self.fused_moe_normal = None
+            self.fused_moe_lowlatency = None
 
         self.w1 = weights.get(W.moe_w1, None)
         self.w2 = weights.get(W.moe_w2, None)
@@ -92,18 +158,26 @@ class GenericMoeLayer(nn.Module):
         # for group topk
         self.correction_bias = weights.get(W.e_score_correction_b, None)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, hidden_states: torch.Tensor, has_prefill_global: Optional[bool] = None
+    ) -> torch.Tensor:
         num_tokens, _ = hidden_states.shape
         router_logits = self.gate(hidden_states)
         router_logits_fp32 = router_logits.float()
+
+        # 确定 topk_ids_dtype
+        if self.support_dual_mode:
+            # 双模式：使用 lowlatency 的 dtype
+            topk_ids_dtype = self.fused_moe_lowlatency.topk_ids_dtype
+        else:
+            # 单模式
+            topk_ids_dtype = self.fused_moe.topk_ids_dtype
 
         topk_weights = torch.empty(
             (num_tokens, self.top_k),
             dtype=torch.float32,
             device=hidden_states.device,
         )
-        # different executor may need different topk_ids dtype
-        topk_ids_dtype = self.fused_moe.topk_ids_dtype
         topk_ids = torch.empty(
             (num_tokens, self.top_k),
             dtype=topk_ids_dtype,
@@ -133,12 +207,51 @@ class GenericMoeLayer(nn.Module):
             # Top-K selection using C++ SelectTopkOp
             self.select_topk(router_logits_fp32, topk_ids, topk_weights)
 
-        experts_output = self.fused_moe(
-            hidden_states=hidden_states,
-            topk_weights=topk_weights,
-            topk_ids=topk_ids,
-            activation="SiGLU",
-        )
+        # ========== 动态选择 FusedMoe ==========
+        if self.support_dual_mode:
+            # 双模式：根据 has_prefill_global 选择
+            if has_prefill_global is None:
+                # 向后兼容：根据 token 数量推断
+                has_prefill_global = num_tokens > 1
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.debug(
+                        f"[GenericMoeLayer] has_prefill_global not provided, "
+                        f"inferred from num_tokens: {num_tokens} -> {has_prefill_global}"
+                    )
+
+            if has_prefill_global:
+                # 有 prefill：使用 Normal 模式
+                logging.info(
+                    f"[GenericMoeLayer] Using Normal mode "
+                    f"(has_prefill_global=True, num_tokens={num_tokens})"
+                )
+                experts_output = self.fused_moe_normal(
+                    hidden_states=hidden_states,
+                    topk_weights=topk_weights,
+                    topk_ids=topk_ids,
+                    activation="SiGLU",
+                )
+            else:
+                # 全部 decode：使用 LowLatency 模式
+                logging.info(
+                    f"[GenericMoeLayer] Using LowLatency mode "
+                    f"(has_prefill_global=False, num_tokens={num_tokens})"
+                )
+                experts_output = self.fused_moe_lowlatency(
+                    hidden_states=hidden_states,
+                    topk_weights=topk_weights,
+                    topk_ids=topk_ids,
+                    activation="SiGLU",
+                )
+        else:
+            # 单模式
+            experts_output = self.fused_moe(
+                hidden_states=hidden_states,
+                topk_weights=topk_weights,
+                topk_ids=topk_ids,
+                activation="SiGLU",
+            )
+
         if self.shared_expert is not None:
             shared_expert_output = self.shared_expert(hidden_states)
             if self.shared_expert_gate is not None:
@@ -225,6 +338,7 @@ class GenericMoeDecoderLayer(nn.Module):
         residual: torch.Tensor,
         fmha_impl: FMHAImplBase,
         kv_cache: Optional[KVCache] = None,
+        has_prefill_global: Optional[bool] = None,
     ) -> DecodeLayerOutput:
         # equivalent to:
         # residual = residual + hidden_states
@@ -239,7 +353,14 @@ class GenericMoeDecoderLayer(nn.Module):
         hidden_states = self.post_attention_layernorm(hidden_states, residual)
 
         # MLP (Dense or MoE，shared expert 逻辑已经在 GenericMoeLayer 内部处理)
-        hidden_states = self.mlp(hidden_states)
+        if hasattr(self.mlp, "support_dual_mode") and self.mlp.support_dual_mode:
+            # MoE 层且支持双模式：传递 has_prefill_global
+            hidden_states = self.mlp(
+                hidden_states, has_prefill_global=has_prefill_global
+            )
+        else:
+            # Dense 层或单模式 MoE
+            hidden_states = self.mlp(hidden_states)
 
         # 返回 mlp_output 和 residual，让下一层的 input_layernorm 来 fuse 最后的 add
         return DecodeLayerOutput(hidden_states, residual)
@@ -297,13 +418,66 @@ class GenericMoeModel(GptModelBase):
             weights.get_global_weight(W.final_ln_gamma), eps=model_config.layernorm_eps
         )
 
+        # ========== DeepEP 双模式支持 ==========
+        self.support_dual_mode = getattr(moe_config, "support_dual_mode", False)
+        self.dp_size = parallelism_config.dp_size
+
+        logging.info(
+            f"[GenericMoeModel.__init__] support_dual_mode={self.support_dual_mode}, "
+            f"dp_size={self.dp_size}, tp_size={parallelism_config.tp_size}, "
+            f"ep_size={parallelism_config.ep_size}"
+        )
+        # ========== 双模式支持结束 ==========
+
     def forward(self, inputs: PyModelInputs, fmha_impl: Any = None) -> PyModelOutputs:
         input_ids: torch.Tensor = inputs.input_ids
         inputs_embeds = self.embed_tokens(input_ids)
         hidden_states = inputs_embeds
         if fmha_impl is None:
-            fmha_impl = self.prepare_fmha_impl(inputs)  # pyright: ignore[reportUnreachable]
+            fmha_impl = self.prepare_fmha_impl(
+                inputs
+            )  # pyright: ignore[reportUnreachable]
             fmha_impl.prepare(inputs.attention_inputs)
+
+        # ========== DeepEP 双模式：获取 has_prefill_global ==========
+        has_prefill_global = False
+        if self.support_dual_mode:
+            # 优先从 C++ 获取（性能最优）
+            if hasattr(inputs, "has_prefill_global"):
+                has_prefill_global = inputs.has_prefill_global
+                logging.debug(
+                    f"[GenericMoeModel] Using has_prefill_global from C++: "
+                    f"{has_prefill_global}"
+                )
+            else:
+                # 兜底：在 Python 层判断（以防 C++ 未设置）
+                logging.warning(
+                    "[GenericMoeModel] has_prefill_global not set by C++, "
+                    "fallback to Python calculation using is_prefill"
+                )
+
+                # 使用 is_prefill 判断（与 C++ 层逻辑一致）
+                local_is_prefill = inputs.attention_inputs.is_prefill
+
+                # All-gather（如果多 DP）
+                if self.dp_size > 1:
+                    from rtp_llm.models_py.distributed import collective_torch
+                    from rtp_llm.models_py.distributed.collective_torch import Group
+
+                    local_tensor = torch.tensor(
+                        [1 if local_is_prefill else 0], dtype=torch.int32, device="cuda"
+                    )
+                    gathered = collective_torch.all_gather(local_tensor, Group.DP)
+                    has_prefill_global = gathered.sum().item() > 0
+                else:
+                    has_prefill_global = local_is_prefill
+
+                logging.debug(
+                    f"[GenericMoeModel] Python fallback: "
+                    f"local_is_prefill={local_is_prefill}, "
+                    f"has_prefill_global={has_prefill_global}"
+                )
+        # ========== has_prefill_global 获取结束 ==========
 
         residual = torch.zeros_like(hidden_states)
         for i, decoder_layer in enumerate(self.layers[: self.layer_num]):
@@ -312,6 +486,7 @@ class GenericMoeModel(GptModelBase):
                 residual,
                 fmha_impl,
                 kv_cache=self.kv_cache.get_layer_cache(i) if self.kv_cache else None,
+                has_prefill_global=has_prefill_global,
             )
             hidden_states = output.hidden_states
             residual = output.residual
