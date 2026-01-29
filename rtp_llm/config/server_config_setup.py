@@ -51,7 +51,8 @@ def auto_configure_deepep(
     moe_config.use_all_gather = (
         moe_config.use_all_gather
         and not deep_ep_config.use_deepep_low_latency
-        and ep_size == tp_size)
+        and ep_size == tp_size
+    )
 
     if moe_config.use_all_gather:
         moe_config.use_deepep_moe = False
@@ -85,11 +86,14 @@ def auto_configure_deepep(
             moe_config.use_deepep_internode = deep_ep_config.use_deepep_internode
         if deep_ep_config.use_deepep_low_latency is not None:
             moe_config.use_deepep_low_latency = deep_ep_config.use_deepep_low_latency
+        if deep_ep_config.support_dual_mode is not None:
+            moe_config.support_dual_mode = deep_ep_config.support_dual_mode
         logging.info(
             f"Using user-specified DeepEP configuration:\n"
             f"  USE_DEEPEP_MOE: {moe_config.use_deepep_moe}\n"
             f"  USE_DEEPEP_INTERNODE: {moe_config.use_deepep_internode}\n"
-            f"  USE_DEEPEP_LOW_LATENCY: {moe_config.use_deepep_low_latency}"
+            f"  USE_DEEPEP_LOW_LATENCY: {moe_config.use_deepep_low_latency}\n"
+            f"  SUPPORT_DUAL_MODE: {moe_config.support_dual_mode}"
         )
 
 
